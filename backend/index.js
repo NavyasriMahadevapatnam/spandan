@@ -236,7 +236,7 @@ app.post("/api/generate-questions", async (req, res) => {
       // Clean and filter nouns carefully: drop determiners, remove long descriptive phrases, and trailing punctuation
       const nouns = Array.from(new Set(doc.nouns().out('array')
          .map(n => n.replace(/^[Tt]heir |^[Oo]ur |^[Tt]hese |^[Tt]hose |^[Tt]he |^[Aa] |^[Aa]n /g, '').replace(/[,.!?]+$/, '').trim())
-         .filter(n => n.length > 4 && n.split(' ').length <= 4 && !['this','that','they','them','these','those','what','which','there','topic','lecture','something','anything', 'problem', 'statement', 'performance'].includes(n.toLowerCase()))
+         .filter(n => n.length > 4 && n.split(' ').length <= 3 && !['this','that','they','them','these','those','what','which','there','topic','lecture','something','anything', 'problem', 'statement', 'performance', 'concept', 'example', 'reason', 'question', 'answer', 'process', 'system', 'method', 'application', 'value', 'result', 'issue', 'context', 'theory', 'analysis', 'data', 'today', 'hello', 'class', 'student', 'teacher', 'everyone', 'anybody'].includes(n.toLowerCase()))
       ));
       
       let fillCount = 5 - generatedQuestions.length;
@@ -300,22 +300,7 @@ app.post("/api/generate-questions", async (req, res) => {
                       answer: correctAnswer 
                     });
                 } else {
-                    // Fallback to simple truncated fill in the blank
-                    const words = s.split(' ');
-                    const truncated = words.slice(0, 18).join(' ') + "...";
-                    let optionsSet = new Set([targetWord]);
-                    while(optionsSet.size < 4) {
-                      optionsSet.add(betterDistractors[Math.floor(Math.random() * betterDistractors.length)]);
-                    }
-                    const optionsArr = Array.from(optionsSet).sort(() => Math.random() - 0.5);
-                    const formattedOptions = [`A) ${optionsArr[0]}`, `B) ${optionsArr[1]}`, `C) ${optionsArr[2]}`, `D) ${optionsArr[3]}`];
-                    const correctAnswer = formattedOptions.find((o) => o.includes(targetWord));
-                    
-                    generatedQuestions.push({ 
-                      q: `Identify the core concept discussed: "${truncated.replace(new RegExp(bestTitle.split(' ')[0], 'gi'), '__________')}"`, 
-                      options: formattedOptions, 
-                      answer: correctAnswer 
-                    });
+                    // Skip sentences that don't look like clear definitions to avoid messy fill-in-the-blanks.
                 }
              }
           }
@@ -325,21 +310,30 @@ app.post("/api/generate-questions", async (req, res) => {
       }
     }
 
-    // 4. Fallback to generic questions to fulfill the minimum 5 questions requirement
-    if (generatedQuestions.length < 5) {
-       const shortTopic = text.substring(0, 30) || "this concept";
-       const genericQuestions = [
-         { q: `What is the primary function of ${shortTopic} in a modern technology stack?`, options: [`A) To manage core system architecture`, `B) To completely bypass network protocols`, `C) To manually compile binary code`, `D) To replace all front-end styling`], answer: `A) To manage core system architecture` },
-         { q: `When implementing ${shortTopic}, what is a common challenge developers face?`, options: [`A) Ensuring proper configuration and integration`, `B) The absolute lack of documentation`, `C) It strictly requires quantum computers`, `D) It deletes the local hard drive`], answer: `A) Ensuring proper configuration and integration` },
-         { q: `Which of the following describes the fundamental benefit of utilizing ${shortTopic}?`, options: [`A) Making systems completely untestable`, `B) Improving modularity and scalability`, `C) Hardcoding all variables permanently`, `D) Removing secure encryption`], answer: `B) Improving modularity and scalability` },
-         { q: `In what scenario is the use of ${shortTopic} most critical?`, options: [`A) When deploying scalable applications`, `B) When writing basic plain text`, `C) When clearing system cache`, `D) When downgrading software`], answer: `A) When deploying scalable applications` },
-         { q: `How does ${shortTopic} impact overall system reliability?`, options: [`A) By decreasing resource efficiency`, `B) By optimizing execution and stability`, `C) By halting background processes`, `D) By resetting application states randomly`], answer: `B) By optimizing execution and stability` }
-       ];
-       
-       for (let g of genericQuestions) {
+    // 4. Fallback: Attention Check Questions
+    if (generatedQuestions.length < 5 && nouns.length > 0) {
+       const validNouns = nouns.filter(n => n.length > 3).slice(0, 3); // take up to 3 valid ones
+       for (const noun of validNouns) {
           if (generatedQuestions.length >= 5) break;
-          if (!generatedQuestions.some(existing => existing.q === g.q)) {
-             generatedQuestions.push(g);
+          // create a random set of distractors
+          const genericDistractors = ["Compiling Syntax", "Hardware Degradation", "Network Latency", "Garbage Collection", "Recursive Functions", "Database Indexing", "Cloud Provisioning", "Quantum Modeling"];
+          let optionsSet = new Set([noun]);
+          while(optionsSet.size < 4) {
+             optionsSet.add(genericDistractors[Math.floor(Math.random() * genericDistractors.length)]);
+          }
+
+          const optionsArr = Array.from(optionsSet).sort(() => Math.random() - 0.5);
+          const formattedOptions = [`A) ${optionsArr[0]}`, `B) ${optionsArr[1]}`, `C) ${optionsArr[2]}`, `D) ${optionsArr[3]}`];
+          const correctAnswer = formattedOptions.find((o) => o.includes(noun));
+          
+          const attentionQ = {
+            q: `Attention Check: Which of the following topics or keywords was just mentioned in the lecture?`,
+            options: formattedOptions,
+            answer: correctAnswer
+          };
+
+          if (!generatedQuestions.some(existing => existing.q === attentionQ.q || existing.answer === attentionQ.answer)) {
+             generatedQuestions.push(attentionQ);
           }
        }
     }
