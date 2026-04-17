@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate, useParams, useLocation, Link } from 'react-
 import { io } from 'socket.io-client';
 import axios from 'axios';
 import { BookOpen, Mic, MicOff, Users, ArrowRight, Save, MessageSquare, Zap } from 'lucide-react';
-
+import { QRCodeCanvas } from 'qrcode.react';
 // --- Constants ---
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -224,12 +224,18 @@ const TeacherDashboard = ({ isCohost = false }: { isCohost?: boolean }) => {
       <Card className="p-6 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-card/50 backdrop-blur-sm">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{session.title} {isCohost && <span className="text-sm bg-primary/20 text-primary px-2 py-1 rounded ml-2">Cohost Mode</span>}</h1>
-          <p className="text-muted-foreground text-sm flex flex-wrap items-center gap-2 mt-1">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-            Session ID: <span className="font-mono bg-muted px-2 py-0.5 rounded">{session._id}</span>
-            <span className="mx-2 hidden md:inline">|</span>
-            Cohost Link: <span className="font-mono bg-muted/50 px-2 py-0.5 rounded cursor-copy hover:bg-muted" onClick={() => {navigator.clipboard.writeText(`${window.location.origin}/cohost/${session._id}`); alert('Link copied!');}}>Copy</span>
-          </p>
+          <div className="flex flex-col gap-3 mt-1">
+            <p className="text-muted-foreground text-sm flex flex-wrap items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+              Session ID: <span className="font-mono bg-muted px-2 py-0.5 rounded">{session._id}</span>
+              <span className="mx-2 hidden md:inline">|</span>
+              Cohost Link: <span className="font-mono bg-muted/50 px-2 py-0.5 rounded cursor-copy hover:bg-muted" onClick={() => {navigator.clipboard.writeText(`${window.location.origin}/cohost/${session._id}`); alert('Link copied!');}}>Copy</span>
+            </p>
+            <div className="bg-white p-2 rounded-lg self-start border flex gap-4 items-center shadow-sm">
+              <QRCodeCanvas value={`${window.location.origin}/student/${session._id}`} size={70} />
+              <div className="text-sm font-medium text-muted-foreground max-w-[150px]">Students can scan to join instantly without typing the ID!</div>
+            </div>
+          </div>
         </div>
         {!isCohost && (
           <Button onClick={toggleListen} variant={isListening ? 'destructive' : 'primary'} className="w-full md:w-auto">
@@ -359,6 +365,29 @@ const StudentPortal = () => {
   const [submittedIds, setSubmittedIds] = useState<string[]>([]);
   const [feedback, setFeedback] = useState<{qId: string, isCorrect: boolean, selectedOpt: string, pointsEarned?: number} | null>(null);
 
+  const [timeLeft, setTimeLeft] = useState(30);
+  const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null);
+
+  const unanswered = questions.filter(q => !submittedIds.includes(q._id));
+  const currentQId = unanswered[0]?._id || null;
+
+  useEffect(() => {
+    if (currentQId !== activeQuestionId) {
+      setActiveQuestionId(currentQId);
+      setTimeLeft(30);
+    }
+  }, [currentQId, activeQuestionId]);
+
+  useEffect(() => {
+    if (!currentQId) return;
+    if (timeLeft <= 0) {
+      submitA(currentQId, "Time's up!");
+      return;
+    }
+    const timer = setTimeout(() => setTimeLeft(prev => prev - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [timeLeft, currentQId]);
+
   useEffect(() => {
     if (!sessionId) return;
     const s = io(API_URL);
@@ -429,7 +458,6 @@ const StudentPortal = () => {
               <p>Waiting for the teacher to post questions...</p>
             </div>
           ) : (() => {
-            const unanswered = questions.filter(q => !submittedIds.includes(q._id));
             if (unanswered.length === 0) {
               const answeredQs = questions.filter(q => submittedIds.includes(q._id));
               const scorableQs = answeredQs.filter(q => q.correctAnswer);
@@ -502,9 +530,23 @@ const StudentPortal = () => {
                         const correctCount = answersForQ.filter(a => a.text === q.correctAnswer).length;
                         const wrongCount = total - correctCount;
                         const percent = total > 0 ? Math.round((correctCount/total)*100) : 0;
+                        const studentAns = answers[q._id];
+                        const isStudentCorrect = studentAns === q.correctAnswer;
                         return (
                           <Card key={q._id} className="p-4 shadow-sm flex flex-col">
                             <p className="font-semibold text-sm mb-3">Q: {q.text}</p>
+                            
+                            <div className="grid grid-cols-2 gap-3 mb-3 text-xs">
+                               <div className="bg-primary/5 p-2 rounded border border-primary/10">
+                                  <div className="text-muted-foreground font-semibold mb-1">Correct Answer:</div>
+                                  <div className="font-bold text-emerald-600">{q.correctAnswer || "None"}</div>
+                               </div>
+                               <div className={`p-2 rounded border ${isStudentCorrect ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
+                                  <div className="text-muted-foreground font-semibold mb-1">Your Answer:</div>
+                                  <div className={`font-bold ${isStudentCorrect ? 'text-emerald-700' : 'text-red-600'}`}>{studentAns || "None"}</div>
+                               </div>
+                            </div>
+
                             <div className="w-full bg-red-100 rounded-full h-2 mb-2 flex overflow-hidden">
                                <div className="bg-emerald-500 h-full transition-all duration-500" style={{ width: `${percent}%` }}></div>
                             </div>
@@ -535,6 +577,17 @@ const StudentPortal = () => {
 
             return (
               <Card className="p-6 quiz-option-hover animate-zoom-in border-l-4 border-l-primary shadow-sm bg-card/80">
+                <div className="flex justify-between items-center mb-4">
+                  <div className="text-sm font-bold text-muted-foreground uppercase flex items-center gap-2">
+                    <Zap size={14} className="text-primary" /> Active Question
+                  </div>
+                  <div className={`px-3 py-1 rounded-full text-xs font-bold ${timeLeft <= 5 ? 'bg-red-500 text-white animate-pulse shadow-sm' : 'bg-primary/10 text-primary'}`}>
+                    ⏱ {timeLeft}s remaining
+                  </div>
+                </div>
+                <div className="w-full bg-muted rounded-full h-1.5 mb-6 overflow-hidden">
+                  <div className={`h-full transition-all duration-1000 ${timeLeft <= 5 ? 'bg-red-500' : 'bg-primary'}`} style={{ width: `${(timeLeft / 30) * 100}%` }}></div>
+                </div>
                 <p className="font-semibold mb-6 text-card-foreground flex gap-3 whitespace-pre-wrap leading-relaxed">
                   <span className="w-6 h-6 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs flex-shrink-0 mt-0.5">Q</span>
                   {questionText}

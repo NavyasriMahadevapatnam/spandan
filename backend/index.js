@@ -169,59 +169,179 @@ app.post("/api/generate-questions", async (req, res) => {
 
     // 1. Check Mock Trivia Database first
     for (const w of words) {
-       if (mockTriviaDB[w]) {
-          generatedQuestions = mockTriviaDB[w];
-          break; // Use the 3 questions from this topic!
+       if (mockTriviaDB[w] && generatedQuestions.length < 5) {
+          // Push items without overwriting to allow combining
+          for (let q of mockTriviaDB[w]) {
+             if (generatedQuestions.length < 5) {
+                 // Check to avoid exact duplicates
+                 if (!generatedQuestions.some(existing => existing.q === q.q)) {
+                    generatedQuestions.push(q);
+                 }
+             }
+          }
        }
     }
 
-    // 2. Transcript-based Blank Questions using NLP (Guarantees on-topic questions)
-    if (generatedQuestions.length === 0) {
-      const distractors = ["concept", "process", "system", "theory", "method", "data", "analysis", "function", "variable", "component"];
-      
-      const doc = nlp(text);
-      const sentences = doc.sentences().out('array');
-      
-      for (let i = 0; i < sentences.length; i++) {
-        if (generatedQuestions.length >= 3) break;
-        
-        const sentence = sentences[i].trim();
-        if (sentence.split(' ').length < 4) continue; // Skip very short sentences
-        
-        // Find nouns in this specific sentence to blank out
-        const sentenceDoc = nlp(sentence);
-        const nouns = sentenceDoc.nouns().out('array').filter(n => n.length > 3 && !['this','that','they','them','these','those','what','which','there'].includes(n.toLowerCase()));
-        
-        if (nouns.length === 0) continue;
-        
-        // Pick the longest noun to be the answer
-        const targetWord = nouns.sort((a, b) => b.length - a.length)[0];
-        
-        // Blank it out
-        const blanked = sentence.replace(new RegExp(`\\b${targetWord}\\b`, 'gi'), '_____');
-        if (blanked === sentence) continue;
-        
-        // Build multiple choice options
-        let optionsSet = new Set([targetWord.toLowerCase()]);
-        while(optionsSet.size < 4) {
-          optionsSet.add(distractors[Math.floor(Math.random() * distractors.length)]);
-        }
-        const optionsArr = Array.from(optionsSet).sort(() => Math.random() - 0.5);
-        const formattedOptions = [`A) ${optionsArr[0]}`, `B) ${optionsArr[1]}`, `C) ${optionsArr[2]}`, `D) ${optionsArr[3]}`];
-        const correctAnswer = formattedOptions.find((o) => o.toLowerCase().includes(targetWord.toLowerCase()));
-        
-        generatedQuestions.push({ q: `Fill in the blank from the lecture:\n"${blanked}"`, options: formattedOptions, answer: correctAnswer });
+    // 2. Transcript-based Direct Definition Extraction (Prioritize extracting definitions explicitly mentioned by the instructor)
+    if (generatedQuestions.length < 5) {
+      const sentencesRaw = text.match(/[^.!?]+[.!?]+/g) || [text];
+      for (const sent of sentencesRaw) {
+         if (generatedQuestions.length >= 5) break;
+         const s = sent.trim();
+         // Match explicit "X is a Y" definitions natively
+         const match = s.match(/^(.*?)\b(is a|is an|is the|are a|are an|are the|refers to|is defined as)\b(.*)/i);
+         if (match) {
+             const concept = match[1].trim();
+             const def = match[3].trim();
+             
+             // Concept must be concise (1-5 words), not a pronoun
+             if (concept.split(' ').length <= 5 && concept.length > 2 && !/^(it|this|that|he|she|they|we|you|i)\s*$/i.test(concept)) {
+                let shortDef = def;
+
+                // Aggressively chop definitions to keep MCQs straight and punchy
+                const truncateMatch = shortDef.match(/^(.*?)(?:,|\bthat\b|\bwhich\b|\bwho\b|\bwhere\b|\benabling\b|\ballowing\b|\btypically\b|\bfor example\b)/i);
+                if (truncateMatch && truncateMatch[1].trim().length > 5) shortDef = truncateMatch[1].trim();
+
+                const words = shortDef.split(' ');
+                if (words.length > 10) shortDef = words.slice(0, 10).join(' ') + "...";
+                
+                const betterDistractors = ["Data synthesis", "Algorithm optimization", "Cloud computing", "Microservices", "Design thinking", "Neural networks", "System architecture", "Database indexing"];
+                let optionsSet = new Set([concept]);
+                while(optionsSet.size < 4) {
+                  optionsSet.add(betterDistractors[Math.floor(Math.random() * betterDistractors.length)]);
+                }
+                const optionsArr = Array.from(optionsSet).sort(() => Math.random() - 0.5);
+                const formattedOptions = [`A) ${optionsArr[0]}`, `B) ${optionsArr[1]}`, `C) ${optionsArr[2]}`, `D) ${optionsArr[3]}`];
+                const correctAnswer = formattedOptions.find((o) => o.includes(concept));
+                
+                const newQ = {
+                   q: `Based on the lecture, which concept ${match[2]} ${shortDef}?`,
+                   options: formattedOptions,
+                   answer: correctAnswer
+                };
+                
+                if (!generatedQuestions.some(existing => existing.q === newQ.q)) {
+                   generatedQuestions.push(newQ);
+                }
+             }
+         }
       }
     }
 
-    // 3. Fallback to generic questions if transcript was completely empty of nouns
-    if (generatedQuestions.length === 0) {
-       const shortTopic = text.substring(0, 30);
-       generatedQuestions.push(
+    // 3. Fallback: Conceptual Definition Questions using NLP + Wikipedia
+    if (generatedQuestions.length < 5) {
+      const distractors = ["concept", "process", "system", "theory", "method", "data", "analysis", "function", "variable", "component", "infrastructure", "framework"];
+      
+      const doc = nlp(text);
+      // Clean and filter nouns carefully: drop determiners, remove long descriptive phrases, and trailing punctuation
+      const nouns = Array.from(new Set(doc.nouns().out('array')
+         .map(n => n.replace(/^[Tt]heir |^[Oo]ur |^[Tt]hese |^[Tt]hose |^[Tt]he |^[Aa] |^[Aa]n /g, '').replace(/[,.!?]+$/, '').trim())
+         .filter(n => n.length > 4 && n.split(' ').length <= 4 && !['this','that','they','them','these','those','what','which','there','topic','lecture','something','anything', 'problem', 'statement', 'performance'].includes(n.toLowerCase()))
+      ));
+      
+      let fillCount = 5 - generatedQuestions.length;
+      // Get plenty of fallback nouns to fill the rest gap!
+      const topNouns = nouns.sort((a, b) => b.length - a.length).slice(0, fillCount + 2);
+      
+      for (const topic of topNouns) {
+        if (generatedQuestions.length >= 5) break;
+        
+        try {
+          const headers = { 'User-Agent': 'SpandanApp/1.0 (contact@example.com)' };
+          const searchRes = await axios.get(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(topic)}&utf8=&format=json`, { timeout: 3000, headers });
+          
+          if (searchRes.data && searchRes.data.query && searchRes.data.query.search.length > 0) {
+             const bestTitle = searchRes.data.query.search[0].title;
+             const wikiRes = await axios.get(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(bestTitle)}`, { timeout: 3000, headers });
+             
+             const extract = wikiRes.data.extract || "";
+             const sentences = extract.match(/[^.!?]+[.!?]+/g) || [extract];
+             
+             if (sentences.length > 0 && sentences[0].length > 30) {
+                const s = sentences[0].trim();
+                
+                let cleanTitle = bestTitle.replace(/\s*\(.*?\)\s*/g, '').trim();
+                let shortDef = s;
+                let targetWord = cleanTitle; 
+                
+                // Match patterns focusing on definition extraction
+                const match = s.match(/\b(is a|is an|is the|refers to|is defined as|are a|are an|are the|is|are)\b(.*)/i);
+                
+                const betterDistractors = ["Data mining", "System architecture", "Algorithm optimization", "Cloud computing", "Data modeling", "Quantum structures", "Database indexing", "Parallel processing", "Microservices", "Design thinking", "Neural networks"];
+                
+                if (match) {
+                    let definition = match[2];
+                    // Truncate at the first comma or explicit example clauses to keep the MCQ straight and simple
+                    const truncateMatch = definition.match(/^(.*?)(?:,|\bthat\b|\bwhich\b|\bwho\b|\bwhere\b|\bsuch as\b|\bin which\b|\btypically\b|\bfor example\b)/i);
+                    
+                    if (truncateMatch && truncateMatch[1].trim().length > 5) {
+                        shortDef = truncateMatch[1].trim();
+                    } else {
+                        shortDef = definition.trim();
+                    }
+                    
+                    // Cap to Max 10 words for punchy, straightforward MCQs (not essays)
+                    const words = shortDef.split(' ');
+                    if (words.length > 10) {
+                        shortDef = words.slice(0, 10).join(' ') + "...";
+                    }
+                    
+                    let optionsSet = new Set([targetWord]);
+                    while(optionsSet.size < 4) {
+                      optionsSet.add(betterDistractors[Math.floor(Math.random() * betterDistractors.length)]);
+                    }
+                    const optionsArr = Array.from(optionsSet).sort(() => Math.random() - 0.5);
+                    const formattedOptions = [`A) ${optionsArr[0]}`, `B) ${optionsArr[1]}`, `C) ${optionsArr[2]}`, `D) ${optionsArr[3]}`];
+                    const correctAnswer = formattedOptions.find((o) => o.includes(targetWord));
+                    
+                    generatedQuestions.push({ 
+                      q: `Which concept is best defined as: "${shortDef}"?`, 
+                      options: formattedOptions, 
+                      answer: correctAnswer 
+                    });
+                } else {
+                    // Fallback to simple truncated fill in the blank
+                    const words = s.split(' ');
+                    const truncated = words.slice(0, 18).join(' ') + "...";
+                    let optionsSet = new Set([targetWord]);
+                    while(optionsSet.size < 4) {
+                      optionsSet.add(betterDistractors[Math.floor(Math.random() * betterDistractors.length)]);
+                    }
+                    const optionsArr = Array.from(optionsSet).sort(() => Math.random() - 0.5);
+                    const formattedOptions = [`A) ${optionsArr[0]}`, `B) ${optionsArr[1]}`, `C) ${optionsArr[2]}`, `D) ${optionsArr[3]}`];
+                    const correctAnswer = formattedOptions.find((o) => o.includes(targetWord));
+                    
+                    generatedQuestions.push({ 
+                      q: `Identify the core concept discussed: "${truncated.replace(new RegExp(bestTitle.split(' ')[0], 'gi'), '__________')}"`, 
+                      options: formattedOptions, 
+                      answer: correctAnswer 
+                    });
+                }
+             }
+          }
+        } catch (e) {
+          console.error("Wikipedia fetch failed for topic:", topic, e.message);
+        }
+      }
+    }
+
+    // 4. Fallback to generic questions to fulfill the minimum 5 questions requirement
+    if (generatedQuestions.length < 5) {
+       const shortTopic = text.substring(0, 30) || "this concept";
+       const genericQuestions = [
          { q: `What is the primary function of ${shortTopic} in a modern technology stack?`, options: [`A) To manage core system architecture`, `B) To completely bypass network protocols`, `C) To manually compile binary code`, `D) To replace all front-end styling`], answer: `A) To manage core system architecture` },
          { q: `When implementing ${shortTopic}, what is a common challenge developers face?`, options: [`A) Ensuring proper configuration and integration`, `B) The absolute lack of documentation`, `C) It strictly requires quantum computers`, `D) It deletes the local hard drive`], answer: `A) Ensuring proper configuration and integration` },
-         { q: `Which of the following describes the fundamental benefit of utilizing ${shortTopic}?`, options: [`A) Making systems completely untestable`, `B) Improving modularity and scalability`, `C) Hardcoding all variables permanently`, `D) Removing secure encryption`], answer: `B) Improving modularity and scalability` }
-       );
+         { q: `Which of the following describes the fundamental benefit of utilizing ${shortTopic}?`, options: [`A) Making systems completely untestable`, `B) Improving modularity and scalability`, `C) Hardcoding all variables permanently`, `D) Removing secure encryption`], answer: `B) Improving modularity and scalability` },
+         { q: `In what scenario is the use of ${shortTopic} most critical?`, options: [`A) When deploying scalable applications`, `B) When writing basic plain text`, `C) When clearing system cache`, `D) When downgrading software`], answer: `A) When deploying scalable applications` },
+         { q: `How does ${shortTopic} impact overall system reliability?`, options: [`A) By decreasing resource efficiency`, `B) By optimizing execution and stability`, `C) By halting background processes`, `D) By resetting application states randomly`], answer: `B) By optimizing execution and stability` }
+       ];
+       
+       for (let g of genericQuestions) {
+          if (generatedQuestions.length >= 5) break;
+          if (!generatedQuestions.some(existing => existing.q === g.q)) {
+             generatedQuestions.push(g);
+          }
+       }
     }
 
     const saved = await Promise.all(generatedQuestions.map(item => 
